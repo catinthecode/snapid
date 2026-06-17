@@ -5,6 +5,38 @@ import { COUNTRY_PRESETS, mmToPx, type CountryPreset } from '../lib/countries';
 
 interface Pos { x: number; y: number }
 
+async function compositeOnWhite(blob: Blob): Promise<string> {
+  const bitmapUrl = URL.createObjectURL(blob);
+  const img = await new Promise<HTMLImageElement>((res, rej) => {
+    const el = new Image();
+    el.onload = () => res(el);
+    el.onerror = rej;
+    el.src = bitmapUrl;
+  });
+  URL.revokeObjectURL(bitmapUrl);
+  const w = img.naturalWidth, h = img.naturalHeight;
+  const tmp = document.createElement('canvas');
+  tmp.width = w; tmp.height = h;
+  const tc = tmp.getContext('2d')!;
+  tc.drawImage(img, 0, 0);
+  const id = tc.getImageData(0, 0, w, h);
+  const d = id.data;
+  for (let i = 3; i < d.length; i += 4) {
+    if (d[i] < 15) d[i] = 0;
+    else if (d[i] > 240) d[i] = 255;
+  }
+  tc.putImageData(id, 0, 0);
+  const out = document.createElement('canvas');
+  out.width = w; out.height = h;
+  const oc = out.getContext('2d')!;
+  oc.fillStyle = '#ffffff';
+  oc.fillRect(0, 0, w, h);
+  oc.drawImage(tmp, 0, 0);
+  return new Promise<string>((res, rej) =>
+    out.toBlob(b => b ? res(URL.createObjectURL(b)) : rej(new Error('toBlob failed')), 'image/jpeg', 0.95),
+  );
+}
+
 // ─── Guideline overlay drawn on the crop canvas ───────────────────────────────
 
 function drawGuidelines(
@@ -148,6 +180,76 @@ function loadImage(src: string): Promise<HTMLImageElement> {
     img.onerror = reject;
     img.src = src;
   });
+}
+
+async function autoFitFace(
+  imageSrc: string,
+  preset: CountryPreset,
+  displayW: number,
+  displayH: number,
+): Promise<{ zoom: number; pos: Pos }> {
+  const img = await loadImage(imageSrc);
+  const DPR = 2;
+  const CW = displayW * DPR;
+  const CH = displayH * DPR;
+  const baseScale = Math.min(CW / img.naturalWidth, CH / img.naturalHeight);
+
+  // Oval center in canvas pixels (mirrors drawGuidelines logic)
+  const D = CH / preset.height;
+  const avgFace = (preset.faceHeight.min + preset.faceHeight.max) / 2;
+  let centerMm: number;
+  if (preset.eyeLevel) {
+    const avgEye = (preset.eyeLevel.min + preset.eyeLevel.max) / 2;
+    centerMm = (preset.height - avgEye) + 0.10 * avgFace;
+  } else if (preset.topMargin) {
+    centerMm = (preset.topMargin.min + preset.topMargin.max) / 2 + avgFace / 2;
+  } else {
+    centerMm = preset.height * 0.45;
+  }
+  const ovalCenterY = centerMm * D;
+
+  // Detect face — fall back to portrait heuristic if API unavailable
+  // Heuristic: for a typical headshot the face center is ~25% from top, ~25% of image height
+  let faceCX = img.naturalWidth / 2;
+  let faceCY = img.naturalHeight * 0.25;
+  let faceH = img.naturalHeight * 0.25;
+
+  if ('FaceDetector' in window) {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const detector = new (window as any).FaceDetector({ fastMode: false, maxDetectedFaces: 1 });
+      const faces = await detector.detect(img);
+      if (faces.length > 0) {
+        const b = faces[0].boundingBox;
+        const cx = b.x + b.width / 2;
+        const cy = b.y + b.height / 2;
+        const wRatio = b.width / img.naturalWidth;
+        const hRatio = b.height / img.naturalHeight;
+        // Only trust detection if face is a plausible fraction of the image
+        if (cx > 0 && cx < img.naturalWidth && cy > 0 && cy < img.naturalHeight
+            && wRatio > 0.05 && wRatio < 0.5
+            && hRatio > 0.05 && hRatio < 0.5) {
+          faceCX = cx;
+          faceCY = cy;
+          faceH = b.height; // bbox is roughly chin-to-crown for passport purposes
+        }
+      }
+    } catch { /* unsupported — use heuristic */ }
+  }
+
+  // Zoom so face height ≈ avg of min/max face requirement
+  const targetFacePx = avgFace * D;
+  const scale = targetFacePx / faceH;
+  const zoom = Math.max(0.3, Math.min(5, scale / baseScale));
+  const actualScale = baseScale * zoom;
+
+  // Shift so face center lands on oval center
+  const iw = img.naturalWidth * actualScale;
+  const ih = img.naturalHeight * actualScale;
+  const posX = (iw / 2 - faceCX * actualScale) / DPR;
+  const posY = (ovalCenterY - CH / 2 + ih / 2 - faceCY * actualScale) / DPR;
+
+  return { zoom, pos: { x: posX, y: posY } };
 }
 
 // ─── Crop canvas ──────────────────────────────────────────────────────────────
@@ -313,7 +415,7 @@ async function exportCroppedPhoto(
 
 type Step = 'upload' | 'crop' | 'download';
 
-export default function EditorPage() {
+export default function EditorPage({ base = '' }: { base?: string }) {
   const preloaded = (() => {
     if (typeof sessionStorage !== 'undefined') {
       const saved = sessionStorage.getItem('bgRemovedImage');
@@ -330,40 +432,58 @@ export default function EditorPage() {
   const [sheetUrl, setSheetUrl] = useState<string | null>(null);
   const [sheetCopies, setSheetCopies] = useState(4);
   const [processing, setProcessing] = useState(false);
+  const [removeBg, setRemoveBg] = useState(false);
+  const [bgStatus, setBgStatus] = useState<'idle' | 'loading-model' | 'processing'>('idle');
 
   const preset = COUNTRY_PRESETS[countryKey];
   const DISPLAY_W = 280;
   const DISPLAY_H = Math.round(DISPLAY_W * (preset.height / preset.width));
 
+  const loadFile = useCallback(async (file: File) => {
+    if (!file.type.startsWith('image/')) return;
+    setCroppedUrl(null);
+    setSheetUrl(null);
+
+    let src: string;
+    if (removeBg) {
+      try {
+        setBgStatus('loading-model');
+        const { removeBackground } = await import('@imgly/background-removal');
+        setBgStatus('processing');
+        const blob = await removeBackground(file, { model: 'isnet', output: { format: 'image/png', quality: 1 } });
+        src = await compositeOnWhite(blob);
+      } catch {
+        src = await new Promise<string>(res => {
+          const reader = new FileReader();
+          reader.onload = () => res(reader.result as string);
+          reader.readAsDataURL(file);
+        });
+      }
+    } else {
+      src = await new Promise<string>(res => {
+        const reader = new FileReader();
+        reader.onload = () => res(reader.result as string);
+        reader.readAsDataURL(file);
+      });
+    }
+
+    const { zoom: autoZoom, pos: autoPos } = await autoFitFace(src!, preset, DISPLAY_W, DISPLAY_H);
+    setZoom(autoZoom);
+    setPos(autoPos);
+    setImageSrc(src!);
+    setBgStatus('idle');
+    setStep('crop');
+  }, [removeBg, preset, DISPLAY_W, DISPLAY_H]);
+
   const onFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      setImageSrc(reader.result as string);
-      setZoom(1);
-      setPos({ x: 0, y: 0 });
-      setCroppedUrl(null);
-      setSheetUrl(null);
-      setStep('crop');
-    };
-    reader.readAsDataURL(file);
+    if (file) loadFile(file);
   };
 
   const onDrop = (e: React.DragEvent) => {
     e.preventDefault();
     const file = e.dataTransfer.files?.[0];
-    if (!file || !file.type.startsWith('image/')) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      setImageSrc(reader.result as string);
-      setZoom(1);
-      setPos({ x: 0, y: 0 });
-      setCroppedUrl(null);
-      setSheetUrl(null);
-      setStep('crop');
-    };
-    reader.readAsDataURL(file);
+    if (file) loadFile(file);
   };
 
   const onCountryChange = (key: string) => {
@@ -429,25 +549,41 @@ export default function EditorPage() {
 
       {/* ── Upload ── */}
       {step === 'upload' && (
-        <div
-          className="border-2 border-dashed border-gray-300 rounded-2xl p-16 text-center hover:border-green-400 transition-colors cursor-pointer"
-          onDrop={onDrop}
-          onDragOver={e => e.preventDefault()}
-          onClick={() => document.getElementById('file-input')?.click()}
-        >
-          <svg className="w-16 h-16 text-gray-300 mx-auto mb-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-            <rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/>
-            <path d="m21 15-5-5L5 21"/>
-          </svg>
-          <p className="text-lg font-medium text-gray-600 mb-1">Click to upload or drag & drop</p>
-          <p className="text-sm text-gray-400">PNG, JPG, WEBP — any portrait photo</p>
-          <input id="file-input" type="file" accept="image/*" className="hidden" onChange={onFile} />
-          <div className="mt-6 text-sm text-gray-400">
-            Need to remove the background first?{' '}
-            <a href="/remove-background" className="text-green-600 hover:underline font-medium">
-              Use the background remover →
-            </a>
+        <div className="space-y-4">
+          <div className="relative">
+            <div
+              className="border-2 border-dashed border-gray-300 rounded-2xl p-16 text-center hover:border-green-400 transition-colors cursor-pointer"
+              onDrop={onDrop}
+              onDragOver={e => e.preventDefault()}
+              onClick={() => document.getElementById('file-input')?.click()}
+            >
+              <svg className="w-16 h-16 text-gray-300 mx-auto mb-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                <rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/>
+                <path d="m21 15-5-5L5 21"/>
+              </svg>
+              <p className="text-lg font-medium text-gray-600 mb-1">Click to upload or drag & drop</p>
+              <p className="text-sm text-gray-400">PNG, JPG, WEBP — any portrait photo</p>
+              <input id="file-input" type="file" accept="image/*" className="hidden" onChange={onFile} />
+            </div>
+            {bgStatus !== 'idle' && (
+              <div className="absolute inset-0 bg-white/80 rounded-2xl flex flex-col items-center justify-center gap-3">
+                <div className="w-10 h-10 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+                <p className="text-gray-700 font-medium">
+                  {bgStatus === 'loading-model' ? 'Loading AI model…' : 'Removing background…'}
+                </p>
+                <p className="text-sm text-gray-400">This may take a moment on first use</p>
+              </div>
+            )}
           </div>
+          <label className="flex items-center gap-3 cursor-pointer select-none w-fit">
+            <input
+              type="checkbox"
+              checked={removeBg}
+              onChange={e => setRemoveBg(e.target.checked)}
+              className="w-4 h-4 accent-indigo-600"
+            />
+            <span className="text-sm text-gray-700 font-medium">Remove background automatically (AI, runs in browser)</span>
+          </label>
         </div>
       )}
 

@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:passportphotowiz.com)",
+      "Bash(curl *passportphotowiz.com/*)"
+    ]
+  }
+}

@@ -47,7 +47,7 @@ async function compositeOnWhite(blob: Blob): Promise<Blob> {
 
 type Status = 'idle' | 'loading-model' | 'processing' | 'done' | 'error';
 
-export default function BgRemovePage() {
+export default function BgRemovePage({ base = '' }: { base?: string }) {
   const [status, setStatus] = useState<Status>('idle');
   const [progress, setProgress] = useState(0);
   const [originalUrl, setOriginalUrl] = useState<string | null>(null);
@@ -225,7 +225,7 @@ export default function BgRemovePage() {
               Download (White Background)
             </a>
             <a
-              href="/editor"
+              href={`${base}/editor`}
               className="flex items-center justify-center gap-2 px-6 py-3 border-2 border-green-600 text-green-600 rounded-lg font-semibold hover:bg-green-50 transition-colors"
             >
               Continue to Editor →

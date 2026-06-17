@@ -8,6 +8,7 @@ const {
   title = 'Free Passport Photo Maker Online',
   description = 'Create compliant passport photos in seconds, right from your browser. Free AI background removal. No sign-up required.',
 } = Astro.props;
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
 ---
 <!doctype html>
 <html lang="en">
@@ -15,22 +16,21 @@ const {
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="description" content={description} />
-    <title>{title} | SnapID</title>
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <title>{title} | PassPhoto</title>
+    <link rel="icon" type="image/svg+xml" href={`${base}/favicon.svg`} />
   </head>
   <body class="min-h-screen bg-gray-50 text-gray-900 flex flex-col">
     <header class="bg-white border-b sticky top-0 z-10">
       <div class="max-w-6xl mx-auto px-4 h-16 flex items-center justify-between">
-        <a href="/" class="flex items-center gap-2 font-bold text-xl text-indigo-600">
+        <a href={`${base}/`} class="flex items-center gap-2 font-bold text-xl text-indigo-600">
           <svg xmlns="http://www.w3.org/2000/svg" class="w-7 h-7" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
             <path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3z"/>
             <circle cx="12" cy="13" r="3"/>
           </svg>
-          SnapID
+          PassPhoto
         </a>
         <nav class="flex items-center gap-1 text-sm">
-          <a href="/remove-background" class="px-3 py-1.5 rounded-md text-gray-600 hover:text-gray-900 hover:bg-gray-100 transition-colors">Remove Background</a>
-          <a href="/editor" class="ml-2 px-4 py-1.5 rounded-md bg-indigo-600 text-white hover:bg-indigo-700 transition-colors font-medium">Start Editing</a>
+          <a href={`${base}/editor`} class="px-4 py-1.5 rounded-md bg-indigo-600 text-white hover:bg-indigo-700 transition-colors font-medium">Start Editing</a>
         </nav>
       </div>
     </header>
@@ -39,10 +39,10 @@ const {
     </main>
     <footer class="bg-white border-t py-6 mt-auto">
       <div class="max-w-6xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2 text-sm text-gray-500">
-        <span>© 2026 SnapID. All rights reserved.</span>
+        <span>© 2026 PassPhoto. All rights reserved.</span>
         <div class="flex gap-4">
-          <a href="/privacy-policy" class="hover:text-green-600">Privacy Policy</a>
-          <a href="/terms" class="hover:text-green-600">Terms of Service</a>
+          <a href={`${base}/privacy-policy`} class="hover:text-green-600">Privacy Policy</a>
+          <a href={`${base}/terms`} class="hover:text-green-600">Terms of Service</a>
         </div>
       </div>
     </footer>

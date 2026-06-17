@@ -3,5 +3,7 @@ import react from '@astrojs/react';
 import tailwind from '@astrojs/tailwind';
 
 export default defineConfig({
+  site: 'https://catinthecode.github.io',
+  base: '/passphoto',
   integrations: [react(), tailwind()],
 });
